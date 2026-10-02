@@ -9,33 +9,59 @@ ACCESS_KEY = "esp32cam123"
 latest_frame = None
 frame_lock = threading.Lock()
 
+flash_state = False
+
+
+# =====================================================
+# HOME PAGE
+# =====================================================
 
 @app.route("/")
 def home():
+
     return """
 <!DOCTYPE html>
 <html>
+
 <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ESP32-CAM Remote Live</title>
 
-    <style>
-        body {
-            background: #222;
-            color: white;
-            text-align: center;
-            font-family: Arial;
-            margin: 0;
-            padding: 20px;
-        }
+<meta name="viewport"
+      content="width=device-width, initial-scale=1">
 
-        img {
-            width: 100%;
-            max-width: 640px;
-            height: auto;
-            border: 2px solid white;
-        }
-    </style>
+<title>ESP32-CAM Remote Camera</title>
+
+<style>
+
+body {
+    background: #222;
+    color: white;
+    text-align: center;
+    font-family: Arial;
+    margin: 0;
+    padding: 15px;
+}
+
+h1 {
+    margin: 10px;
+}
+
+img {
+    width: 100%;
+    max-width: 640px;
+    height: auto;
+    border: 2px solid white;
+}
+
+button {
+    padding: 12px 25px;
+    margin: 8px;
+    font-size: 18px;
+    border-radius: 8px;
+    border: none;
+}
+
+</style>
+
 </head>
 
 <body>
@@ -44,41 +70,113 @@ def home():
 
 <img src="/stream?key=esp32cam123">
 
-<p>Remote camera stream</p>
+<br>
+
+<button onclick="flashOn()">
+FLASH ON
+</button>
+
+<button onclick="flashOff()">
+FLASH OFF
+</button>
+
+<script>
+
+function flashOn()
+{
+    fetch("/flash/on?key=esp32cam123");
+}
+
+function flashOff()
+{
+    fetch("/flash/off?key=esp32cam123");
+}
+
+</script>
 
 </body>
+
 </html>
 """
 
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    global latest_frame
+# =====================================================
+# RECEIVE CONTINUOUS MJPEG STREAM FROM ESP32
+# =====================================================
+
+@app.route("/upload_stream", methods=["POST"])
+def upload_stream():
 
     key = request.args.get("key")
 
     if key != ACCESS_KEY:
         return "Unauthorized", 401
 
-    data = request.get_data()
+    stream = request.stream
 
-    if not data:
-        return "No image received", 400
+    try:
 
-    with frame_lock:
-        latest_frame = data
+        while True:
 
-    return "OK", 200
+            # Read until multipart boundary
+            line = stream.readline()
 
+            if not line:
+                break
+
+            if b"Content-Length:" not in line:
+                continue
+
+            # Content-Length line
+            content_length = int(
+                line.split(b":")[1].strip()
+            )
+
+            # Read remaining multipart headers
+            while True:
+
+                line = stream.readline()
+
+                if not line:
+                    break
+
+                if line in (b"\r\n", b"\n"):
+                    break
+
+            # Read JPEG
+            frame = stream.read(content_length)
+
+            if not frame:
+                break
+
+            with frame_lock:
+                global latest_frame
+                latest_frame = frame
+
+            # Consume trailing CRLF
+            stream.read(2)
+
+    except Exception as e:
+
+        print("ESP32 stream disconnected:", e)
+
+    return "Stream ended", 200
+
+
+# =====================================================
+# VIEW LIVE STREAM
+# =====================================================
 
 @app.route("/stream")
 def stream():
+
     key = request.args.get("key")
 
     if key != ACCESS_KEY:
         return "Unauthorized", 401
 
     def generate():
+
         last_frame = None
 
         while True:
@@ -86,7 +184,8 @@ def stream():
             with frame_lock:
                 frame = latest_frame
 
-            if frame is not None and frame != last_frame:
+            if frame is not None and frame is not last_frame:
+
                 last_frame = frame
 
                 yield (
@@ -99,7 +198,7 @@ def stream():
                     + b"\r\n"
                 )
 
-            time.sleep(0.03)
+            time.sleep(0.02)
 
     return Response(
         generate(),
@@ -107,13 +206,72 @@ def stream():
     )
 
 
+# =====================================================
+# FLASH
+# =====================================================
+
+@app.route("/flash/on")
+def flash_on():
+
+    global flash_state
+
+    key = request.args.get("key")
+
+    if key != ACCESS_KEY:
+        return "Unauthorized", 401
+
+    flash_state = True
+
+    return "FLASH_ON"
+
+
+@app.route("/flash/off")
+def flash_off():
+
+    global flash_state
+
+    key = request.args.get("key")
+
+    if key != ACCESS_KEY:
+        return "Unauthorized", 401
+
+    flash_state = False
+
+    return "FLASH_OFF"
+
+
+@app.route("/flash")
+def flash():
+
+    key = request.args.get("key")
+
+    if key != ACCESS_KEY:
+        return "Unauthorized", 401
+
+    if flash_state:
+        return "ON"
+
+    return "OFF"
+
+
+# =====================================================
+# HEALTH
+# =====================================================
+
 @app.route("/health")
 def health():
+
     return "ESP32-CAM cloud server is running!"
 
 
+# =====================================================
+# START
+# =====================================================
+
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
-        port=5000
+        port=5000,
+        threaded=True
     )
