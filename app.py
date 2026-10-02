@@ -1,48 +1,54 @@
 from flask import Flask, Response, request
+import threading
 import time
 
 app = Flask(__name__)
 
-# Simple access key for testing
 ACCESS_KEY = "esp32cam123"
 
 latest_frame = None
+frame_lock = threading.Lock()
 
 
 @app.route("/")
 def home():
     return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>ESP32-CAM Remote Camera</title>
-        <style>
-            body {
-                background: #222;
-                color: white;
-                text-align: center;
-                font-family: Arial;
-                padding: 20px;
-            }
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32-CAM Remote Live</title>
 
-            img {
-                width: 100%;
-                max-width: 640px;
-                border: 2px solid white;
-            }
-        </style>
-    </head>
+    <style>
+        body {
+            background: #222;
+            color: white;
+            text-align: center;
+            font-family: Arial;
+            margin: 0;
+            padding: 20px;
+        }
 
-    <body>
+        img {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            border: 2px solid white;
+        }
+    </style>
+</head>
 
-        <h1>ESP32-CAM Remote Camera</h1>
+<body>
 
-        <img src="/stream?key=esp32cam123">
+<h1>ESP32-CAM LIVE</h1>
 
-    </body>
-    </html>
-    """
+<img src="/stream?key=esp32cam123">
+
+<p>Remote camera stream</p>
+
+</body>
+</html>
+"""
 
 
 @app.route("/upload", methods=["POST"])
@@ -59,7 +65,8 @@ def upload():
     if not data:
         return "No image received", 400
 
-    latest_frame = data
+    with frame_lock:
+        latest_frame = data
 
     return "OK", 200
 
@@ -72,13 +79,15 @@ def stream():
         return "Unauthorized", 401
 
     def generate():
-        global latest_frame
+        last_frame = None
 
         while True:
 
-            if latest_frame is not None:
-
+            with frame_lock:
                 frame = latest_frame
+
+            if frame is not None and frame != last_frame:
+                last_frame = frame
 
                 yield (
                     b"--frame\r\n"
@@ -90,7 +99,7 @@ def stream():
                     + b"\r\n"
                 )
 
-            time.sleep(0.05)
+            time.sleep(0.03)
 
     return Response(
         generate(),
